@@ -1,12 +1,14 @@
 #!/bin/bash
 
-# Định nghĩa biến log file
+# Define log file variable
 LOG_FILE="/var/log/script.log"
 
 FILE_USER_IT="users.txt"
 NTP_SERVER="pool.ntp.org"
+# Services to disable
+unnecessary_services=("avahi-daemon.service" "cups.service")
 
-# Định nghĩa các hàm hiển thị màu sắc
+# Define color display functions
 function echo_red() {
   echo -e "\033[1;31m$1\033[0m"
 }
@@ -19,7 +21,7 @@ function echo_yellow() {
   echo -e "\033[1;33m$1\033[0m"
 }
 
-# Định nghĩa các hàm log
+# Define logging functions
 function log_success() {
   echo_green "[SUCCESS] $1"
   echo "$(date '+%Y-%m-%d %H:%M:%S') [SUCCESS] $1" >> "$LOG_FILE"
@@ -35,63 +37,63 @@ function log_error() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $1" >> "$LOG_FILE"
 }
 
-# Kiểm tra quyền root
+# Check if running as root
 function check_root_user() {
   if [[ "$(id -u)" != "0" ]]; then
-    log_error "Vui lòng chạy script bằng quyền root."
+    log_error "Please run the script as root."
     exit 1
   else
-    log_success "Đã xác nhận quyền root."
+    log_success "Confirmed running as root."
   fi
 }
 
-# Xác minh phiên bản hệ điều hành
+# Verify operating system version
 function verify_os_version() {
   os_name=$(lsb_release -si)
   os_version=$(lsb_release -sr)
   if [[ "$os_name" == "Ubuntu" && "$os_version" == "22.04" ]]; then
-    log_success "Hệ điều hành là Ubuntu 22.04. Tiếp tục chạy script."
+    log_success "Operating system is Ubuntu 22.04. Continuing with the script."
   else
-    log_error "Script này chỉ chạy trên Ubuntu 22.04. Bạn đang sử dụng $os_name $os_version."
+    log_error "This script only runs on Ubuntu 22.04. You are using $os_name $os_version."
     exit 1
   fi
 }
 
-# Cập nhật hệ thống
+# Update system packages
 function update_system_packages() {
-  echo_yellow "Đang cập nhật hệ thống..."
-  apt update -y >/dev/null 2>&1 && apt upgrade -y >/dev/null 2>&1
+  echo_yellow "Updating system packages..."
+  apt update -y >/dev/null 2>&1 && apt upgrade -y >/dev/null 2>&1 && apt autoremove -y >/dev/null 2>&1
   if [[ $? -eq 0 ]]; then
-    log_success "Cập nhật hệ thống thành công."
+    log_success "System packages updated successfully."
   else
-    log_error "Cập nhật hệ thống thất bại."
+    log_error "Failed to update system packages."
   fi
 }
 
-# Vô hiệu hóa đăng nhập root qua SSH
+# Disable root SSH login
 function disable_root_ssh_login() {
-  echo_yellow "Vô hiệu hóa đăng nhập root qua SSH..."
-  sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+  echo_yellow "Disabling root SSH login..."
+  sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
   systemctl restart sshd
   if [[ $? -eq 0 ]]; then
-    log_success "Đã vô hiệu hóa đăng nhập root qua SSH."
+    log_success "Disabled root SSH login."
   else
-    log_error "Vô hiệu hóa đăng nhập root qua SSH thất bại."
+    log_error "Failed to disable root SSH login."
   fi
 }
 
-# Cấu hình sudo và nhóm sugroup
+# Configure sudo permissions and sugroup
 function configure_sudo_permissions() {
   groupadd sugroup >/dev/null 2>&1
   chgrp sugroup /bin/su
   chmod 750 /bin/su
-  echo "%sugroup   ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-  log_success "Cấu hình sudo và nhóm sugroup thành công."
+  echo "%sugroup ALL=NOPASSWD:ALL" >> /etc/sudoers
+  log_success "Configured sudo permissions and sugroup."
 }
 
-# Cấu hình bảo mật cho các tệp tin
+# Configure file security settings
 function configure_file_security() {
-  echo_yellow "Cấu hình bảo mật cho các tệp tin..."
+  echo_yellow "Configuring file security settings..."
   chmod 644 /etc/passwd
   chmod 751 /var/log/
   chmod 640 /var/log/*log
@@ -101,155 +103,254 @@ function configure_file_security() {
   chmod 640 /etc/rsyslog.conf
   chmod 751 /etc/rsyslog.d
   chmod 640 /etc/rsyslog.d/*
-  chmod 700 /etc/init.d
-  log_success "Cấu hình bảo mật tệp tin thành công."
+  chmod 755 /etc/init.d
+  log_success "File security settings configured successfully."
 }
 
-# Kiểm tra các user có UID 0
+# Check users with UID 0
 function check_users_with_uid_zero() {
-  echo_yellow "Kiểm tra các user có UID 0:"
-  awk -F: '($3 == "0") {print $1}' /etc/passwd | tee -a "$LOG_FILE"
+  echo_yellow "Checking users with UID 0..."
+  UID_ZERO_LOG="/var/log/uid_zero_users.log"
+  > "$UID_ZERO_LOG"
+  users_with_uid_zero=$(awk -F: '($3 == "0") {print $1}' /etc/passwd)
+  for user in $users_with_uid_zero; do
+    user_info=$(getent passwd "$user")
+    echo "User with UID 0: $user" | tee -a "$UID_ZERO_LOG"
+    echo "Details: $user_info" | tee -a "$UID_ZERO_LOG"
+    if [[ "$user" != "root" ]]; then
+      log_warning "User $user has UID 0. This may be a security risk."
+    fi
+  done
+  log_success "UID 0 user check completed. Details saved to $UID_ZERO_LOG."
 }
 
-# Đồng bộ thời gian hệ thống
-function synchronize_system_time() {
-  local server="$1"
-  if [ -z "$server" ]; then
-    log_error "Vui lòng cung cấp tên hoặc địa chỉ IP của server NTP."
+# Synchronize system time with Chrony
+function install_and_configure_chrony() {
+  echo_yellow "Installing and configuring Chrony..."
+  apt install chrony -y >/dev/null 2>&1
+  sed -i "s|^pool .*|pool $NTP_SERVER iburst|" /etc/chrony/chrony.conf
+  systemctl restart chrony
+  if [[ $? -eq 0 ]]; then
+    log_success "Chrony installed and configured successfully."
+  else
+    log_error "Failed to configure Chrony."
+  fi
+}
+
+# Configure sysctl for security enhancements
+function configure_sysctl_security() {
+  echo_yellow "Configuring sysctl for security enhancements..."
+  sysctl_params=(
+    "net.ipv4.ip_forward=0"
+    "net.ipv4.conf.all.accept_redirects=0"
+    "net.ipv4.tcp_syncookies=1"
+    "net.ipv4.icmp_echo_ignore_broadcasts=1"
+  )
+
+  for param in "${sysctl_params[@]}"; do
+    key=$(echo "$param" | cut -d= -f1)
+    sed -i "s|^$key.*|$param|" /etc/sysctl.conf
+    if ! grep -q "^$key" /etc/sysctl.conf; then
+      echo "$param" >> /etc/sysctl.conf
+    fi
+  done
+  sysctl -p >/dev/null 2>&1
+  log_success "Sysctl security settings configured successfully."
+}
+
+# Configure password policy
+function configure_password_policy() {
+  echo_yellow "Configuring password policy..."
+  # Backup configuration file
+  cp /etc/pam.d/common-password /etc/pam.d/common-password.bak.$(date +%F-%T)
+  apt install libpam-pwquality -y >/dev/null 2>&1
+
+  # Configure pam_pwquality in /etc/pam.d/common-password
+  if ! grep -q "pam_pwquality.so" /etc/pam.d/common-password; then
+    sed -i '/^password\s\+requisite\s\+pam_deny.so/a password requisite pam_pwquality.so retry=3 minlen=8 ucredit=-1 lcredit=-2 dcredit=-1 ocredit=-1' /etc/pam.d/common-password
+  else
+    sed -i 's/^password\s\+requisite\s\+pam_pwquality.so.*/password requisite pam_pwquality.so retry=3 minlen=8 ucredit=-1 lcredit=-2 dcredit=-1 ocredit=-1/' /etc/pam.d/common-password
+  fi
+
+  # Update /etc/login.defs
+  sed -i 's/^#\?\s*\(PASS_MAX_DAYS\s*\).*/\1   60/' /etc/login.defs
+  sed -i 's/^#\?\s*\(PASS_MIN_DAYS\s*\).*/\1   3/' /etc/login.defs
+  sed -i 's/^#\?\s*\(PASS_MIN_LEN\s*\).*/\1   8/' /etc/login.defs
+  sed -i 's/^#\?\s*\(PASS_WARN_AGE\s*\).*/\1   10/' /etc/login.defs
+  log_success "Password policy configured successfully."
+}
+
+# Function to check if password complies with policy
+function is_password_compliant() {
+  local password="$1"
+
+  # Check password length
+  if [[ ${#password} -lt 8 ]]; then
     return 1
   fi
 
-  if ! command -v ntpdate &> /dev/null; then
-    echo_yellow "Đang cài đặt ntpdate..."
-    apt update -y >/dev/null 2>&1 && apt install -y ntpdate >/dev/null 2>&1
+  # Check for at least one uppercase letter
+  if ! [[ "$password" =~ [A-Z] ]]; then
+    return 1
   fi
 
-  echo_yellow "Đang đồng bộ thời gian từ server $server..."
-  ntpdate "$server" >/dev/null 2>&1
-
-  if [ $? -eq 0 ]; then
-    log_success "Đồng bộ thời gian thành công từ $server."
-  else
-    log_error "Đồng bộ thời gian thất bại."
+  # Check for at least two lowercase letters
+  if ! [[ "$(echo "$password" | grep -o '[a-z]' | wc -l)" -ge 2 ]]; then
+    return 1
   fi
+
+  # Check for at least one digit
+  if ! [[ "$password" =~ [0-9] ]]; then
+    return 1
+  fi
+
+  # Check for at least one special character
+  if ! [[ "$password" =~ [\@\#\$\%\^\&\*\(\)\_\+\!\~\`\-\=] ]]; then
+    return 1
+  fi
+
+  return 0
 }
 
-# Cấu hình sysctl để tăng cường bảo mật
-function configure_sysctl_security() {
-  echo_yellow "Cấu hình sysctl để tăng cường bảo mật..."
-  echo "
-net.ipv4.ip_forward = 0
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.tcp_syncookies = 1
-net.ipv4.icmp_echo_ignore_broadcasts = 1
-  " >> /etc/sysctl.conf
-  sysctl -p >/dev/null 2>&1
-  log_success "Cấu hình sysctl bảo mật thành công."
-}
-
-# Cấu hình chính sách mật khẩu
-function configure_password_policy() {
-  echo_yellow "Cấu hình chính sách mật khẩu..."
-  apt install libpam-pwquality -y >/dev/null 2>&1
-  echo "password requisite pam_pwquality.so retry=3 minlen=12 dcredit=-1 ucredit=-1 ocredit=-1 lcredit=-1" >> /etc/pam.d/common-password
-  sed -i '/^PASS_MAX_DAYS/ c\PASS_MAX_DAYS   60' /etc/login.defs
-  sed -i '/^PASS_MIN_DAYS/ c\PASS_MIN_DAYS   3' /etc/login.defs
-  sed -i '/^PASS_MIN_LEN/ c\PASS_MIN_LEN    8' /etc/login.defs
-  sed -i '/^PASS_WARN_AGE/ c\PASS_WARN_AGE   10' /etc/login.defs
-  log_success "Cấu hình chính sách mật khẩu thành công."
-}
-
-# Xóa các user không cần thiết
-function delete_unnecessary_users() {
+# Disable unnecessary user accounts
+function disable_unnecessary_users() {
   local users=("Guest" "lp" "uucp" "gopher" "games" "news")
 
-  echo_yellow "Xóa các user không cần thiết..."
+  echo_yellow "Disabling unnecessary user accounts..."
   for user in "${users[@]}"; do
     if id "$user" &>/dev/null; then
-      userdel -r "$user" >/dev/null 2>&1
-      echo "Đã xóa user: $user" | tee -a "$LOG_FILE"
+      usermod -s /usr/sbin/nologin "$user"
+      passwd -l "$user"
+      echo "Locked user account: $user" | tee -a "$LOG_FILE"
     else
-      echo "User $user không tồn tại" | tee -a "$LOG_FILE"
+      echo "User $user does not exist" | tee -a "$LOG_FILE"
     fi
   done
-  log_success "Hoàn thành việc xóa user không cần thiết."
+  log_success "Completed disabling unnecessary user accounts."
 }
 
-# Liệt kê các user không có mật khẩu
+# List users without passwords
 function list_users_without_password() {
-  echo_yellow "Các user không có mật khẩu trên hệ thống:"
-  awk -F: '($2 == "" || $2 == "!") {print $1}' /etc/shadow | tee -a "$LOG_FILE"
+  echo_yellow "Listing users without passwords..."
+  awk -F: '($2 == "" && $7 !~ /(\/usr\/sbin\/nologin|\/bin\/false)/) {print $1}' /etc/shadow | tee -a "$LOG_FILE"
 }
 
-# Tạo user từ file
+# Create users from file
 function create_users_from_file() {
   local file="$1"
 
   if [[ ! -f "$file" ]]; then
-    log_error "File $file không tồn tại."
+    log_error "File $file does not exist."
     return 1
   fi
 
-  echo_yellow "Tạo user từ file $file..."
+  echo_yellow "Creating users from file $file..."
   while IFS=: read -r username password ssh_key; do
     if id "$username" &>/dev/null; then
-      echo "User $username đã tồn tại." | tee -a "$LOG_FILE"
+      echo "User $username already exists." | tee -a "$LOG_FILE"
     else
-      useradd -m -s /bin/bash -G sugroup,sudo "$username"
-      echo "$username:$password" | chpasswd
-      echo "Đã tạo user: $username và thêm vào nhóm 'sugroup' và 'sudo'." | tee -a "$LOG_FILE"
-
-      user_ssh_dir="/home/$username/.ssh"
-      mkdir -p "$user_ssh_dir"
-      echo "$ssh_key" > "$user_ssh_dir/authorized_keys"
-      chmod 700 "$user_ssh_dir"
-      chmod 600 "$user_ssh_dir/authorized_keys"
-      chown -R "$username:$username" "$user_ssh_dir"
-      echo "Đã thêm SSH key cho user: $username." | tee -a "$LOG_FILE"
+      # Check if password complies with policy
+      if is_password_compliant "$password"; then
+        useradd -m -s /bin/bash -G sugroup,sudo "$username"
+        echo "$username:$password" | chpasswd
+        echo "Created user: $username and added to groups 'sugroup' and 'sudo'." | tee -a "$LOG_FILE"
+        user_dir="/home/$username/"
+        user_ssh_dir="/home/$username/.ssh"
+        mkdir -p "$user_ssh_dir"
+        cp /etc/skel/.* "$user_dir"
+        echo "$ssh_key" > "$user_ssh_dir/authorized_keys"
+        chmod 700 "$user_ssh_dir"
+        chmod 600 "$user_ssh_dir/authorized_keys"
+        chown -R "$username:$username" "$user_dir"
+        echo "Added SSH key for user: $username." | tee -a "$LOG_FILE"
+      else
+        log_warning "Password for user $username does not comply with the policy. Skipping user creation."
+      fi
     fi
   done < "$file"
-  log_success "Hoàn thành việc tạo user từ file."
+  log_success "Completed creating users from file."
 }
 
-# Cấu hình SSH
+# Configure user session timeout
+function configure_session_timeout() {
+  echo_yellow "Configuring user session timeout..."
+  SESSION_TIMEOUT=600
+  echo "TMOUT=$SESSION_TIMEOUT" >> /etc/profile
+  echo "readonly TMOUT" >> /etc/profile
+  echo "export TMOUT" >> /etc/profile
+  log_success "User session timeout configured."
+}
+
+# Audit and disable unnecessary services
+function audit_and_disable_services() {
+  echo_yellow "Auditing and disabling unnecessary services..."
+  for service in "${unnecessary_services[@]}"; do
+    if systemctl is-enabled "$service" >/dev/null 2>&1; then
+      systemctl disable "$service" >/dev/null 2>&1
+      systemctl stop "$service"
+      echo "Disabled service: $service" | tee -a "$LOG_FILE"
+    fi
+  done
+
+  log_success "Completed auditing and disabling services."
+}
+
+# Configure SSH
 function configure_ssh() {
-  echo_yellow "Cấu hình SSH..."
-  echo "banner /etc/ssh/banner" >> /etc/ssh/sshd_config
-  echo "
+  echo_yellow "Configuring SSH..."
+
+  # Backup configuration file
+  cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%F-%T)
+
+  # Configure banner
+  if ! grep -q "^Banner /etc/ssh/banner" /etc/ssh/sshd_config; then
+    echo "Banner /etc/ssh/banner" >> /etc/ssh/sshd_config
+  else
+    sed -i 's|^Banner.*|Banner /etc/ssh/banner|' /etc/ssh/sshd_config
+  fi
+
+  # Create banner file
+  cat <<EOL > /etc/ssh/banner
 *************************WARNING***********************************************************
-This computer system is the property of the Prajwal Organization. It is for authorized use only. By using this system, all users acknowledge notice of, and agree to comply with, the Organization's Acceptable Use of Information Technology Resources Policy. Unauthorized or improper use of this system may result in administrative disciplinary action, civil charges/criminal penalties, and/or other sanctions as set forth in the policy. By continuing to use this system you indicate your awareness of and consent to these terms and conditions of use. LOG OFF IMMEDIATELY if you do not agree to the conditions stated in this warning.
+This computer system is the property of the Prajwal Organization. It is for authorized use only.
+By using this system, all users acknowledge notice of, and agree to comply with,
+the Organization's Acceptable Use of Information Technology Resources Policy.
+Unauthorized or improper use of this system may result in administrative disciplinary action,
+civil charges/criminal penalties, and/or other sanctions as set forth in the policy.
+By continuing to use this system you indicate your awareness of and consent to these terms and conditions of use.
+LOG OFF IMMEDIATELY if you do not agree to the conditions stated in this warning.
 *******************************************************************************************
-  " > /etc/ssh/banner
-  echo "
-PermitUserEnvironment no
-ClientAliveInterval 900
-ClientAliveCountMax 0
-" >> /etc/ssh/sshd_config
+EOL
+
+  # Update parameters in sshd_config
+  sed -i '/^#\?PermitUserEnvironment /c\PermitUserEnvironment no' /etc/ssh/sshd_config
+  sed -i '/^#\?ClientAliveInterval /c\ClientAliveInterval 900' /etc/ssh/sshd_config
+  sed -i '/^#\?ClientAliveCountMax /c\ClientAliveCountMax 0' /etc/ssh/sshd_config
+
   systemctl restart sshd
-  log_success "Cấu hình SSH thành công."
+  if [[ $? -eq 0 ]]; then
+    log_success "SSH configured successfully."
+  else
+    log_error "Failed to configure SSH."
+  fi
 }
 
-# Vô hiệu hóa Ctrl+Alt+Del
+# Disable Ctrl+Alt+Del
 function disable_ctrl_alt_del() {
-  echo_yellow "Vô hiệu hóa tổ hợp phím Ctrl+Alt+Del..."
+  echo_yellow "Disabling Ctrl+Alt+Del key sequence..."
   systemctl mask ctrl-alt-del.target
   systemctl daemon-reload
-  log_success "Đã vô hiệu hóa Ctrl+Alt+Del."
+  log_success "Ctrl+Alt+Del key sequence disabled."
 }
 
-# Cấu hình chính sách đăng nhập thất bại
-function configure_login_failures() {
-  echo_yellow "Cấu hình chính sách đăng nhập thất bại..."
-  echo "auth required pam_tally2.so deny=5 unlock_time=1800" >> /etc/pam.d/sshd
-  echo "auth required pam_tally2.so deny=5 unlock_time=1800" >> /etc/pam.d/login
-  log_success "Cấu hình chính sách đăng nhập thất bại thành công."
-}
-
-# Cài đặt và cấu hình auditd
+# Install and configure auditd
 function setup_auditd_rules() {
-  echo_yellow "Cài đặt và cấu hình auditd..."
+  echo_yellow "Installing and configuring auditd..."
   apt install auditd audispd-plugins -y >/dev/null 2>&1
-  echo "
+
+  # Create auditd rules file
+  cat <<EOL > /etc/audit/rules.d/audit.rules
+# Custom audit rules
 -a always,exit -F arch=b64 -S adjtimex -S settimeofday -S stime -k time-change
 -a always,exit -F arch=b64 -S clock_settime -k time-change
 -w /etc/localtime -p wa -k time-change
@@ -269,32 +370,38 @@ function setup_auditd_rules() {
 -w /var/log/btmp -p wa -k session
 -w /var/log/wtmp -p wa -k session
 -w /etc/sudoers -p wa -k actions
-" >> /etc/audit/audit.rules
-  sed -i 's/^active.*/active = yes/' /etc/audit/plugins.d/syslog.conf
+EOL
+
+  augenrules --load
   service auditd restart
-  log_success "Cấu hình auditd thành công."
+  if [[ $? -eq 0 ]]; then
+    log_success "auditd configured successfully."
+  else
+    log_error "Failed to configure auditd."
+  fi
 }
 
-# Hàm main
+# Main function
 function main() {
   check_root_user
   verify_os_version
   update_system_packages
   configure_file_security
-  synchronize_system_time "$NTP_SERVER"
+  install_and_configure_chrony
   configure_sysctl_security
   setup_auditd_rules
   disable_root_ssh_login
-  configure_login_failures
   disable_ctrl_alt_del
   configure_ssh
   configure_password_policy
   configure_sudo_permissions
   check_users_with_uid_zero
-  delete_unnecessary_users
+  disable_unnecessary_users
   list_users_without_password
+  configure_session_timeout
+  audit_and_disable_services
   create_users_from_file "$FILE_USER_IT"
 }
 
-# Chạy hàm main
+# Run main function
 main
